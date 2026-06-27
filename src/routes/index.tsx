@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { QueryEditor } from "@/components/QueryEditor";
 import { PlanTree } from "@/components/PlanTree";
 import { OptimizationPanel } from "@/components/OptimizationPanel";
@@ -7,6 +7,15 @@ import { MetricsDashboard } from "@/components/MetricsDashboard";
 import { LearningAssistant } from "@/components/LearningAssistant";
 import { ComplexityAnalysis } from "@/components/ComplexityAnalysis";
 import { ProgressTracker } from "@/components/ProgressTracker";
+import { ExecutionOrderPanel } from "@/components/ExecutionOrderPanel";
+import { CostBreakdownPanel } from "@/components/CostBreakdownPanel";
+import { PlanComparisonTable } from "@/components/PlanComparisonTable";
+import { DbmsInsightsPanel } from "@/components/DbmsInsightsPanel";
+import { InterviewPrepPanel } from "@/components/InterviewPrepPanel";
+import {
+  LearningModeProvider,
+  LearningModeToggle,
+} from "@/components/LearningMode";
 import {
   Tabs,
   TabsContent,
@@ -20,29 +29,36 @@ import {
   recordConcepts,
   type IntelligenceReport,
 } from "@/lib/sql/intelligence";
+import { executionOrder } from "@/lib/sql/executionOrder";
+import { buildCostBreakdown, comparePlans } from "@/lib/sql/costBreakdown";
+import { buildInterviewCards } from "@/lib/sql/interviewPrep";
 import type { AnalysisResult } from "@/lib/sql/types";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "SQL Execution Plan Visualizer & Optimizer" },
+      { title: "SQL Query Intelligence Platform" },
       {
         name: "description",
         content:
-          "Parse SQL, visualize execution plans, estimate cost, and learn SQL concepts through complexity analysis and rule-based hints.",
+          "Parse SQL, visualize execution plans, compare with an optimized plan, learn how databases execute queries, and prep for SQL interviews — all in one DBMS-style educational platform.",
       },
       {
         property: "og:title",
-        content: "SQL Execution Plan Visualizer & Optimizer",
+        content: "SQL Query Intelligence Platform",
       },
       {
         property: "og:description",
         content:
-          "Interactive DBMS-style query planner with a built-in SQL learning assistant.",
+          "Interactive DBMS query planner, learning center, and interview prep — built on a rule-based SQL engine.",
       },
     ],
   }),
-  component: Index,
+  component: () => (
+    <LearningModeProvider>
+      <Index />
+    </LearningModeProvider>
+  ),
 });
 
 function Index() {
@@ -64,9 +80,34 @@ function Index() {
   // Record concepts for the initial sample on mount.
   useStateOnce(() => recordConcepts(intel.complexity.detected));
 
+  // Derived analyses — recomputed when query or analysis changes.
+  const stages = useMemo(() => executionOrder(sql), [sql]);
+  const breakdown = useMemo(
+    () =>
+      analyzed
+        ? buildCostBreakdown(
+            analyzed.parsed,
+            analyzed.originalPlan,
+            analyzed.optimizedPlan,
+            analyzed.originalCost,
+            analyzed.optimizedCost,
+          )
+        : null,
+    [analyzed],
+  );
+  const planDelta = useMemo(
+    () =>
+      analyzed
+        ? comparePlans(analyzed.originalPlan, analyzed.optimizedPlan)
+        : [],
+    [analyzed],
+  );
+  const interviewCards = useMemo(
+    () => buildInterviewCards(intel.complexity.detected),
+    [intel],
+  );
+
   const run = () => {
-    // Intelligence runs even if the strict parser rejects the query —
-    // that's how learners discover the syntax issues in the first place.
     const report = buildIntelligence(sql);
     setIntel(report);
     recordConcepts(report.complexity.detected);
@@ -92,6 +133,8 @@ function Index() {
           optimized: analyzed.optimizedPlan,
           metrics: analyzed.metrics,
           intelligence: intel,
+          executionOrder: stages,
+          costBreakdown: breakdown,
         },
         null,
         2,
@@ -118,7 +161,14 @@ function Index() {
       ...analyzed.suggestions.map((s) => `  [${s.rule}] ${s.message}`),
       "",
       "SYNTAX ISSUES:",
-      ...intel.syntax.map((s) => `  [${s.severity}] ${s.type} — ${s.explanation}`),
+      ...intel.syntax.map(
+        (s) => `  [${s.severity}] ${s.type} — ${s.explanation}`,
+      ),
+      "",
+      "COST BREAKDOWN:",
+      ...(breakdown?.reasons.map(
+        (r) => `  [${r.rule}] saved ${r.saved} — ${r.explanation}`,
+      ) ?? []),
     ];
     download("optimization-report.txt", lines.join("\n"), "text/plain");
   };
@@ -133,37 +183,47 @@ function Index() {
       <header className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <div className="font-mono text-xs text-primary tracking-[0.3em]">
-            DBMS · QUERY PLANNER
+            DBMS · SQL INTELLIGENCE PLATFORM
           </div>
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-            SQL Execution Plan{" "}
-            <span className="text-primary">Visualizer</span> & Optimizer
+            SQL Query{" "}
+            <span className="text-primary">Intelligence</span> Platform
           </h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
             Parse a SQL query, build a relational-algebra execution plan,
-            estimate per-operator cost, compare against a rule-based optimized
-            plan — and learn SQL through complexity analysis and concept hints.
+            compare it with a rule-based optimized plan, learn how databases
+            execute queries internally, and prep for SQL interviews.
           </p>
         </div>
-        {analyzed && (
-          <div className="flex gap-2">
-            <ToolbarButton onClick={exportJson}>Export JSON</ToolbarButton>
-            <ToolbarButton onClick={downloadReport}>Report .txt</ToolbarButton>
-            <ToolbarButton onClick={copyPlan}>Copy plan</ToolbarButton>
-          </div>
-        )}
+        <div className="flex flex-wrap gap-2 items-center">
+          <LearningModeToggle />
+          {analyzed && (
+            <>
+              <ToolbarButton onClick={exportJson}>Export JSON</ToolbarButton>
+              <ToolbarButton onClick={downloadReport}>Report .txt</ToolbarButton>
+              <ToolbarButton onClick={copyPlan}>Copy plan</ToolbarButton>
+            </>
+          )}
+        </div>
       </header>
 
       <QueryEditor value={sql} onChange={setSql} onRun={run} error={error} />
 
       <Tabs defaultValue="plans" className="w-full">
-        <TabsList className="h-auto flex-wrap gap-1 bg-card border border-border p-1">
-          <TabsTrigger value="plans">Execution Plans</TabsTrigger>
-          <TabsTrigger value="optimization">Optimization</TabsTrigger>
-          <TabsTrigger value="learning">Learning Assistant</TabsTrigger>
-          <TabsTrigger value="complexity">Complexity Analysis</TabsTrigger>
-          <TabsTrigger value="progress">Progress Tracker</TabsTrigger>
-        </TabsList>
+        <div className="sticky top-0 z-10 -mx-1 px-1 py-1 bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+          <TabsList className="h-auto flex-wrap gap-1 bg-card border border-border p-1">
+            <TabsTrigger value="plans">Execution Plans</TabsTrigger>
+            <TabsTrigger value="execution-order">Execution Order</TabsTrigger>
+            <TabsTrigger value="optimization">Query Optimizer</TabsTrigger>
+            <TabsTrigger value="cost">Why Cost Changed</TabsTrigger>
+            <TabsTrigger value="comparison">Plan Comparison</TabsTrigger>
+            <TabsTrigger value="dbms">Real DBMS Insights</TabsTrigger>
+            <TabsTrigger value="learning">SQL Intelligence</TabsTrigger>
+            <TabsTrigger value="complexity">Complexity</TabsTrigger>
+            <TabsTrigger value="interview">Interview Prep</TabsTrigger>
+            <TabsTrigger value="progress">Progress Tracker</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="plans" className="mt-5">
           {analyzed ? (
@@ -193,12 +253,40 @@ function Index() {
           )}
         </TabsContent>
 
+        <TabsContent value="execution-order" className="mt-5">
+          <ExecutionOrderPanel stages={stages} />
+        </TabsContent>
+
         <TabsContent value="optimization" className="mt-5">
           {analyzed ? (
             <OptimizationPanel suggestions={analyzed.suggestions} />
           ) : (
             <UnavailableNotice />
           )}
+        </TabsContent>
+
+        <TabsContent value="cost" className="mt-5">
+          {breakdown ? (
+            <CostBreakdownPanel data={breakdown} />
+          ) : (
+            <UnavailableNotice />
+          )}
+        </TabsContent>
+
+        <TabsContent value="comparison" className="mt-5">
+          {analyzed ? (
+            <PlanComparisonTable
+              rows={planDelta}
+              originalCost={analyzed.originalCost}
+              optimizedCost={analyzed.optimizedCost}
+            />
+          ) : (
+            <UnavailableNotice />
+          )}
+        </TabsContent>
+
+        <TabsContent value="dbms" className="mt-5">
+          <DbmsInsightsPanel />
         </TabsContent>
 
         <TabsContent value="learning" className="mt-5">
@@ -215,13 +303,17 @@ function Index() {
           <ComplexityAnalysis data={intel.complexity} />
         </TabsContent>
 
+        <TabsContent value="interview" className="mt-5">
+          <InterviewPrepPanel cards={interviewCards} />
+        </TabsContent>
+
         <TabsContent value="progress" className="mt-5">
           <ProgressTracker tick={progressTick} />
         </TabsContent>
       </Tabs>
 
       <footer className="text-xs text-muted-foreground text-center pt-4">
-        Educational DBMS visualizer · simplified cost model · rule-based learning engine
+        Educational DBMS platform · rule-based parser, optimizer & learning engine
       </footer>
     </main>
   );
@@ -239,7 +331,7 @@ function UnavailableNotice() {
   return (
     <div className="panel p-5 text-sm text-muted-foreground">
       Execution plan unavailable — fix the parser error shown above, or open
-      the <span className="text-primary">Learning Assistant</span> tab to see
+      the <span className="text-primary">SQL Intelligence</span> tab to see
       what the rule-based analyzer found.
     </div>
   );
